@@ -1,525 +1,225 @@
-import { View, Text, FlatList, TextInput, TouchableOpacity, StyleSheet, Image, KeyboardAvoidingView, Platform, ActivityIndicator, Alert } from 'react-native';
-import { useLocalSearchParams, useRouter } from 'expo-router';
-import { useEffect, useRef, useState } from 'react';
-import { useChatStore } from '../../store/useChatStore';
-import useAuthStore from '../../store/useAuthStore';
-import MessageBubble from '../../components/MessageBubble';
-import ImageViewer from '../../components/ImageViewer';
-import { Ionicons } from '@expo/vector-icons';
-import * as ImagePicker from 'expo-image-picker';
-import * as Clipboard from 'expo-clipboard';
-import * as Haptics from 'expo-haptics';
+import EmptyUI from "@/components/EmptyUI";
+import MessageBubble from "@/components/MessageBubble";
+import { useCurrentUser } from "@/hooks/useAuth";
+import { useMessages } from "@/hooks/useMessages";
+import { useSocketStore } from "@/lib/socket";
+import { MessageSender } from "@/types";
+import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
+import { router, useLocalSearchParams } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  View,
+  Text,
+  Pressable,
+  KeyboardAvoidingView,
+  ScrollView,
+  Platform,
+  ActivityIndicator,
+  TextInput,
+} from "react-native";
 
-export default function ChatDetailScreen() {
-  const { id } = useLocalSearchParams();
-  const router = useRouter();
-  const { 
-    messages, 
-    getMessages, 
-    sendMessage, 
-    selectedUser, 
-    subscribeToMessages, 
-    unsubscribeFromMessages, 
-    sendTyping, 
-    sendStopTyping,
-    deleteMessage 
-  } = useChatStore();
-  const { authUser, onlineUsers } = useAuthStore();
-  
-  const [messageText, setMessageText] = useState('');
-  const [selectedImage, setSelectedImage] = useState<string | null>(null);
-  const [isTyping, setIsTyping] = useState(false);
-  const [sending, setSending] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [partnerTyping, setPartnerTyping] = useState(false);
-  const [viewerVisible, setViewerVisible] = useState(false);
-  const [viewerImage, setViewerImage] = useState('');
-  
-  const flatListRef = useRef<FlatList>(null);
-  const typingTimeout = useRef<NodeJS.Timeout>();
-  const isOnline = onlineUsers.includes(id as string);
+import { SafeAreaView } from "react-native-safe-area-context";
 
+type ChatParams = {
+  id: string;
+  participantId: string;
+  name: string;
+  avatar: string;
+};
+
+const ChatDetailScreen = () => {
+  const { id: chatId, avatar, name, participantId } = useLocalSearchParams<ChatParams>();
+
+  const [messageText, setMessageText] = useState("");
+  const [isSending, setIsSending] = useState(false);
+  const scrollViewRef = useRef<ScrollView>(null);
+
+  const { data: currentUser } = useCurrentUser();
+  const { data: messages, isLoading } = useMessages(chatId);
+
+  const { joinChat, leaveChat, sendMessage, sendTyping, isConnected, onlineUsers, typingUsers } =
+    useSocketStore();
+
+  const isOnline = participantId ? onlineUsers.has(participantId) : false;
+  const isTyping = typingUsers.get(chatId) === participantId;
+
+  const typingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // join chat room on mount, leave on unmount
   useEffect(() => {
-    loadMessages();
-    subscribeToMessages();
-    setupTypingListeners();
-    
+    if (chatId && isConnected) joinChat(chatId);
+
     return () => {
-      unsubscribeFromMessages();
-      cleanupTypingListeners();
+      if (chatId) leaveChat(chatId);
     };
-  }, [id]);
+  }, [chatId, isConnected, joinChat, leaveChat]);
 
-  const loadMessages = async () => {
-    setLoading(true);
-    await getMessages(id as string);
-    setLoading(false);
-    setTimeout(() => flatListRef.current?.scrollToEnd(), 100);
-  };
-
-  const setupTypingListeners = () => {
-    const socket = useAuthStore.getState().socket;
-    if (!socket) return;
-
-    socket.on('typing', ({ from }) => {
-      if (from === id) {
-        setPartnerTyping(true);
-      }
-    });
-
-    socket.on('stopTyping', ({ from }) => {
-      if (from === id) {
-        setPartnerTyping(false);
-      }
-    });
-  };
-
-  const cleanupTypingListeners = () => {
-    const socket = useAuthStore.getState().socket;
-    if (socket) {
-      socket.off('typing');
-      socket.off('stopTyping');
+  // scroll to bottom when new messages arrive
+  useEffect(() => {
+    if (messages && messages.length > 0) {
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, 100);
     }
-  };
+  }, [messages]);
 
-  const handleTyping = () => {
-    if (!isTyping) {
-      setIsTyping(true);
-      sendTyping(id as string);
-    }
+  const handleTyping = useCallback(
+    (text: string) => {
+      setMessageText(text);
 
-    if (typingTimeout.current) {
-      clearTimeout(typingTimeout.current);
-    }
+      if (!isConnected || !chatId) return;
 
-    typingTimeout.current = setTimeout(() => {
-      setIsTyping(false);
-      sendStopTyping(id as string);
-    }, 2000);
-  };
+      // send typing start
+      if (text.length > 0) {
+        sendTyping(chatId, true);
 
-  const pickImage = async () => {
-    try {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please grant camera roll permissions to send images');
-        return;
-      }
-
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        allowsEditing: true,
-        quality: 0.7,
-        base64: true,
-      });
-
-      if (!result.canceled) {
-        setSelectedImage(`data:image/jpeg;base64,${result.assets[0].base64}`);
-        Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-      }
-    } catch (error) {
-      console.error('Error picking image:', error);
-      Alert.alert('Error', 'Failed to pick image');
-    }
-  };
-
-  const handleSend = async () => {
-    if ((!messageText.trim() && !selectedImage) || sending) return;
-
-    setSending(true);
-    try {
-      await sendMessage({
-        text: messageText.trim() || undefined,
-        image: selectedImage || undefined,
-      });
-      
-      setMessageText('');
-      setSelectedImage(null);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-      setTimeout(() => flatListRef.current?.scrollToEnd(), 100);
-    } catch (error: any) {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      Alert.alert('Error', error.message || 'Failed to send message');
-    } finally {
-      setSending(false);
-    }
-  };
-
-  const handleMessageLongPress = (message: any) => {
-    const isOwnMessage = message.senderId === authUser?._id;
-    
-    const options = [
-      {
-        text: 'Copy',
-        onPress: () => {
-          if (message.text) {
-            Clipboard.setStringAsync(message.text);
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            Alert.alert('Copied!', 'Message copied to clipboard');
-          }
+        // clear existing timeout
+        if (typingTimeoutRef.current) {
+          clearTimeout(typingTimeoutRef.current);
         }
-      }
-    ];
 
-    if (isOwnMessage) {
-      options.push({
-        text: 'Delete',
-        style: 'destructive',
-        onPress: () => {
-          Alert.alert(
-            'Delete Message',
-            'Are you sure you want to delete this message?',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              {
-                text: 'Delete',
-                style: 'destructive',
-                onPress: async () => {
-                  await deleteMessage(message._id);
-                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-                }
-              }
-            ]
-          );
+        // stop typing after 2 seconds of no input
+        typingTimeoutRef.current = setTimeout(() => {
+          sendTyping(chatId, false);
+        }, 2000);
+      } else {
+        // text cleared, stop typing
+        if (typingTimeoutRef.current) {
+          clearTimeout(typingTimeoutRef.current);
         }
-      });
-    }
-
-    options.push({ text: 'Cancel', style: 'cancel' });
-
-    Alert.alert('Message Options', '', options);
-  };
-
-  const handleImagePress = (imageUrl: string) => {
-    setViewerImage(imageUrl);
-    setViewerVisible(true);
-  };
-
-  const renderMessage = ({ item }: { item: any }) => {
-    const isOwnMessage = item.senderId === authUser?._id;
-    
-    return (
-      <MessageBubble
-        message={item}
-        isOwnMessage={isOwnMessage}
-        senderName={!isOwnMessage ? selectedUser?.displayName : undefined}
-        senderAvatar={!isOwnMessage ? selectedUser?.profilePic : undefined}
-        onImagePress={handleImagePress}
-        onLongPress={handleMessageLongPress}
-        showStatus={isOwnMessage}
-      />
-    );
-  };
-
-  const TypingIndicator = () => (
-    <View style={styles.typingContainer}>
-      <View style={styles.typingBubble}>
-        <View style={styles.typingDot} />
-        <View style={[styles.typingDot, styles.typingDotMiddle]} />
-        <View style={styles.typingDot} />
-      </View>
-      <Text style={styles.typingText}>{selectedUser?.displayName} is typing...</Text>
-    </View>
+        sendTyping(chatId, false);
+      }
+    },
+    [chatId, isConnected, sendTyping]
   );
 
-  const EmptyChat = () => (
-    <View style={styles.emptyContainer}>
-      <Ionicons name="chatbubble-ellipses-outline" size={60} color="#333" />
-      <Text style={styles.emptyTitle}>No messages yet</Text>
-      <Text style={styles.emptySubtitle}>
-        Say hello to {selectedUser?.displayName}!
-      </Text>
-    </View>
-  );
+  const handleSend = () => {
+    console.log({ isSending, isConnected, currentUser, messageText });
+    if (!messageText.trim() || isSending || !isConnected || !currentUser) return;
 
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#ff44aa" />
-      </View>
-    );
-  }
+    // stop typing indicator
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+    sendTyping(chatId, false);
+
+    setIsSending(true);
+    sendMessage(chatId, messageText.trim(), {
+      _id: currentUser._id,
+      name: currentUser.name,
+      email: currentUser.email,
+      avatar: currentUser.avatar,
+    });
+    setMessageText("");
+    setIsSending(false);
+
+    setTimeout(() => {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }, 100);
+  };
 
   return (
-    <KeyboardAvoidingView 
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
-    >
+    <SafeAreaView className="flex-1 bg-surface" edges={["top", "bottom"]}>
       {/* Header */}
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#ff44aa" />
-        </TouchableOpacity>
-        
-        <TouchableOpacity 
-          style={styles.headerInfo}
-          onPress={() => router.push(`/profile/${id}`)}
-        >
-          <Text style={styles.headerName}>{selectedUser?.displayName}</Text>
-          <View style={styles.statusContainer}>
-            <View style={[styles.statusDot, isOnline ? styles.online : styles.offline]} />
-            <Text style={styles.statusText}>
-              {isOnline ? 'Online' : selectedUser?.lastSeen ? `Last seen ${new Date(selectedUser.lastSeen).toLocaleDateString()}` : 'Offline'}
+      <View className="flex-row items-center px-4 py-2 bg-surface border-b border-surface-light">
+        <Pressable onPress={() => router.back()}>
+          <Ionicons name="arrow-back" size={24} color="#F4A261" />
+        </Pressable>
+        <View className="flex-row items-center flex-1 ml-2">
+          {avatar && <Image source={avatar} style={{ width: 40, height: 40, borderRadius: 999 }} />}
+          <View className="ml-3">
+            <Text className="text-foreground font-semibold text-base" numberOfLines={1}>
+              {name}
+            </Text>
+            <Text className={`text-xs ${isTyping ? "text-primary" : "text-muted-foreground"}`}>
+              {isTyping ? "typing..." : isOnline ? "Online" : "Offline"}
             </Text>
           </View>
-        </TouchableOpacity>
-        
-        {selectedUser?.profilePic ? (
-          <Image source={{ uri: selectedUser.profilePic }} style={styles.headerAvatar} />
-        ) : (
-          <View style={[styles.headerAvatar, styles.defaultAvatar]}>
-            <Text style={styles.avatarText}>
-              {selectedUser?.displayName?.charAt(0).toUpperCase()}
-            </Text>
-          </View>
-        )}
-      </View>
-      
-      {/* Messages List */}
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        keyExtractor={(item) => item._id}
-        renderItem={renderMessage}
-        contentContainerStyle={styles.messagesList}
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd()}
-        ListEmptyComponent={EmptyChat}
-        ListFooterComponent={partnerTyping ? TypingIndicator : null}
-      />
-      
-      {/* Input Area */}
-      <View style={styles.inputContainer}>
-        {selectedImage && (
-          <View style={styles.selectedImageContainer}>
-            <Image source={{ uri: selectedImage }} style={styles.selectedImage} />
-            <TouchableOpacity
-              style={styles.removeImage}
-              onPress={() => setSelectedImage(null)}
-            >
-              <Ionicons name="close-circle" size={22} color="#ff44aa" />
-            </TouchableOpacity>
-          </View>
-        )}
-        
-        <View style={styles.inputRow}>
-          <TouchableOpacity onPress={pickImage} style={styles.attachButton}>
-            <Ionicons name="image" size={24} color="#ff44aa" />
-          </TouchableOpacity>
-          
-          <TextInput
-            style={styles.input}
-            placeholder="Type a message..."
-            placeholderTextColor="#888"
-            value={messageText}
-            onChangeText={setMessageText}
-            onChange={handleTyping}
-            multiline
-            maxLength={1000}
-          />
-          
-          <TouchableOpacity 
-            onPress={handleSend}
-            disabled={(!messageText.trim() && !selectedImage) || sending}
-            style={[
-              styles.sendButton,
-              (!messageText.trim() && !selectedImage) && styles.sendButtonDisabled
-            ]}
-          >
-            {sending ? (
-              <ActivityIndicator size="small" color="#fff" />
-            ) : (
-              <Ionicons name="send" size={20} color="#fff" />
-            )}
-          </TouchableOpacity>
+        </View>
+        <View className="flex-row items-center gap-3">
+          <Pressable className="w-9 h-9 rounded-full items-center justify-center">
+            <Ionicons name="call-outline" size={20} color="#A0A0A5" />
+          </Pressable>
+          <Pressable className="w-9 h-9 rounded-full items-center justify-center">
+            <Ionicons name="videocam-outline" size={20} color="#A0A0A5" />
+          </Pressable>
         </View>
       </View>
 
-      {/* Image Viewer Modal */}
-      <ImageViewer
-        visible={viewerVisible}
-        imageUrl={viewerImage}
-        onClose={() => setViewerVisible(false)}
-      />
-    </KeyboardAvoidingView>
-  );
-}
+      {/* Message + Keyboard input */}
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#121212',
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#121212',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 16,
-    paddingTop: 60,
-    paddingBottom: 16,
-    backgroundColor: '#1e1e1e',
-    borderBottomWidth: 1,
-    borderBottomColor: '#ff44aa',
-  },
-  backButton: {
-    marginRight: 16,
-    padding: 4,
-  },
-  headerInfo: {
-    flex: 1,
-  },
-  headerName: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
-  },
-  statusContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    marginRight: 6,
-  },
-  online: {
-    backgroundColor: '#4ade80',
-  },
-  offline: {
-    backgroundColor: '#888',
-  },
-  statusText: {
-    color: '#888',
-    fontSize: 12,
-  },
-  headerAvatar: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-  },
-  defaultAvatar: {
-    backgroundColor: '#ff44aa',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  avatarText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: 'bold',
-  },
-  messagesList: {
-    padding: 16,
-    paddingBottom: 8,
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingVertical: 60,
-  },
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  emptySubtitle: {
-    fontSize: 14,
-    color: '#888',
-    textAlign: 'center',
-  },
-  typingContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-  },
-  typingBubble: {
-    flexDirection: 'row',
-    backgroundColor: '#1e1e1e',
-    borderRadius: 20,
-    padding: 12,
-    marginRight: 8,
-    borderWidth: 1,
-    borderColor: '#ff44aa20',
-  },
-  typingDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#888',
-    marginHorizontal: 2,
-  },
-  typingDotMiddle: {
-    backgroundColor: '#ff44aa',
-  },
-  typingText: {
-    color: '#888',
-    fontSize: 12,
-    fontStyle: 'italic',
-  },
-  inputContainer: {
-    borderTopWidth: 1,
-    borderTopColor: '#ff44aa',
-    backgroundColor: '#1e1e1e',
-    padding: 12,
-  },
-  selectedImageContainer: {
-    marginBottom: 10,
-    position: 'relative',
-    alignSelf: 'flex-start',
-  },
-  selectedImage: {
-    width: 80,
-    height: 80,
-    borderRadius: 8,
-  },
-  removeImage: {
-    position: 'absolute',
-    top: -8,
-    right: -8,
-    backgroundColor: '#1e1e1e',
-    borderRadius: 12,
-  },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-end',
-    gap: 8,
-  },
-  attachButton: {
-    padding: 8,
-  },
-  input: {
-    flex: 1,
-    backgroundColor: '#121212',
-    borderRadius: 20,
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    color: '#fff',
-    maxHeight: 120,
-    borderWidth: 1,
-    borderColor: '#ff44aa30',
-    fontSize: 15,
-    lineHeight: 20,
-  },
-  sendButton: {
-    backgroundColor: '#ff44aa',
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 2,
-  },
-  sendButtonDisabled: {
-    opacity: 0.5,
-  },
-});
+      <KeyboardAvoidingView
+        className="flex-1"
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        keyboardVerticalOffset={0}
+      >
+        <View className="flex-1 bg-surface">
+          {isLoading ? (
+            <View className="flex-1 items-center justify-center">
+              <ActivityIndicator size="large" color="#F4A261" />
+            </View>
+          ) : !messages || messages.length === 0 ? (
+            <EmptyUI
+              title="No messages yet"
+              subtitle="Start the conversation!"
+              iconName="chatbubbles-outline"
+              iconColor="#6B6B70"
+              iconSize={64}
+            />
+          ) : (
+            <ScrollView
+              ref={scrollViewRef}
+              contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12, gap: 8 }}
+              onContentSizeChange={() => {
+                scrollViewRef.current?.scrollToEnd({ animated: false });
+              }}
+            >
+              {messages.map((message) => {
+                const senderId = (message.sender as MessageSender)._id;
+                const isFromMe = currentUser ? senderId === currentUser._id : false;
+
+                return <MessageBubble key={message._id} message={message} isFromMe={isFromMe} />;
+              })}
+            </ScrollView>
+          )}
+
+          {/* Input bar */}
+          <View className="px-3 pb-3 pt-2 bg-surface border-t border-surface-light">
+            <View className="flex-row items-end bg-surface-card rounded-3xl px-3 py-1.5 gap-2">
+              <Pressable className="w-8 h-8 rounded-full items-center justify-center">
+                <Ionicons name="add" size={22} color="#F4A261" />
+              </Pressable>
+
+              <TextInput
+                placeholder="Type a message"
+                placeholderTextColor="#6B6B70"
+                className="flex-1 text-foreground text-sm mb-2"
+                multiline
+                style={{ maxHeight: 100 }}
+                value={messageText}
+                onChangeText={handleTyping}
+                onSubmitEditing={handleSend}
+                editable={!isSending}
+              />
+
+              <Pressable
+                className="w-8 h-8 rounded-full items-center justify-center bg-primary"
+                onPress={handleSend}
+                disabled={!messageText.trim() || isSending}
+              >
+                {isSending ? (
+                  <ActivityIndicator size="small" color="#0D0D0F" />
+                ) : (
+                  <Ionicons name="send" size={18} color="#0D0D0F" />
+                )}
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </SafeAreaView>
+  );
+};
+
+export default ChatDetailScreen;

@@ -1,0 +1,14 @@
+{
+  "build": {
+    "preview": {
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EAS_USE_CACHE": "1",
+        "ORG_GRADLE_PROJECT_reactNativeArchitectures": "armeabi-v7a"
+      },
+      "distribution": "internal"
+    }
+  }
+}

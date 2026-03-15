@@ -1,42 +1,61 @@
-import { Stack } from 'expo-router';
-import { useEffect } from 'react';
-import useAuthStore from '../store/useAuthStore';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { View, ActivityIndicator, StatusBar } from 'react-native';
+import { Stack } from "expo-router";
+import "../global.css";
+import { ClerkProvider } from "@clerk/clerk-expo";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { tokenCache } from "@clerk/clerk-expo/token-cache";
+import AuthSync from "@/components/AuthSync";
+import { StatusBar } from "expo-status-bar";
+import * as Sentry from "@sentry/react-native";
+import SocketConnection from "@/components/SocketConnection";
 
-export default function RootLayout() {
-  const { checkAuth, isCheckingAuth, authUser } = useAuthStore();
+// clerkalmesh account sentry: https://cc5dff6c3866a1792287272870fd5d98@o4511045482053632.ingest.us.sentry.io/4511045489328128
+Sentry.init({
+  dsn: "https://cc5dff6c3866a1792287272870fd5d98@o4511045482053632.ingest.us.sentry.io/4511045489328128",
+  // Adds more context data to events (IP address, cookies, user, etc.)
+  // For more information, visit: https://docs.sentry.io/platforms/react-native/data-management/data-collected/
+  sendDefaultPii: true,
 
-  useEffect(() => {
-    checkAuth();
-  }, []);
+  // Enable Logs
+  enableLogs: true,
 
-  if (isCheckingAuth) {
-    return (
-      <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: '#121212' }}>
-        <StatusBar barStyle="light-content" backgroundColor="#121212" />
-        <ActivityIndicator size="large" color="#ff44aa" />
-      </View>
-    );
-  }
+  // Configure Session Replay
+  replaysSessionSampleRate: 0.1,
+  replaysOnErrorSampleRate: 1,
+  integrations: [
+    Sentry.mobileReplayIntegration(),
+    Sentry.reactNativeTracingIntegration({
+      traceFetch: true,
+      traceXHR: true,
+      enableHTTPTimings: true,
+    }),
+  ],
 
+  // uncomment the line below to enable Spotlight (https://spotlightjs.com)
+  // spotlight: __DEV__,
+});
+
+const queryClient = new QueryClient();
+
+export default Sentry.wrap(function RootLayout() {
   return (
-    <GestureHandlerRootView style={{ flex: 1 }}>
-      <SafeAreaProvider>
-        <StatusBar barStyle="light-content" backgroundColor="#121212" />
-        <Stack screenOptions={{ headerShown: false }}>
-          {!authUser ? (
-            <>
-              <Stack.Screen name="login" />
-              <Stack.Screen name="signup" />
-            </>
-          ) : (
-            <Stack.Screen name="(tabs)" />
-          )}
-          <Stack.Screen name="chat/[id]" options={{ headerShown: false }} />
+    <ClerkProvider tokenCache={tokenCache}>
+      <QueryClientProvider client={queryClient}>
+        <AuthSync />
+        <SocketConnection />
+        <StatusBar style="light" />
+        <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: "#0D0D0F" } }}>
+          <Stack.Screen name="(auth)" options={{ animation: "fade" }} />
+          <Stack.Screen name="(tabs)" options={{ animation: "fade" }} />
+          <Stack.Screen
+            name="new-chat"
+            options={{
+              animation: "slide_from_bottom",
+              presentation: "modal",
+              gestureEnabled: true,
+            }}
+          />
         </Stack>
-      </SafeAreaProvider>
-    </GestureHandlerRootView>
+      </QueryClientProvider>
+    </ClerkProvider>
   );
-}
+});

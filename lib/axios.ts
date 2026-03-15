@@ -1,51 +1,50 @@
-import axios from 'axios';
-import * as SecureStore from 'expo-secure-store';
+import axios from "axios";
+import * as Sentry from "@sentry/react-native";
+import { useAuth } from "@clerk/clerk-expo";
+import { useCallback } from "react";
 
-//const BASE_URL = 'https://backtesting-production.up.railway.app';
-const BASE_URL = "memesh-network-server-production.up.railway.app";
+const API_URL = "https://whisper-ijeje.sevalla.app/api";
 
+// this is the same thing we did with useEffect setup but it's optimized version - it's better!!
 
-const axiosInstance = axios.create({
-  baseURL: `${BASE_URL}/api`,
-  withCredentials: true,
-  timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json',
-  },
+const api = axios.create({
+  baseURL: API_URL,
+  headers: { "Content-Type": "application/json" },
 });
 
-// Request interceptor
-axiosInstance.interceptors.request.use(
-  async (config) => {
-    const token = await SecureStore.getItemAsync('jwt');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
+// Response interceptor registered once
+api.interceptors.response.use(
+  (response) => response,
   (error) => {
-    return Promise.reject(error);
-  }
-);
-
-// Response interceptor
-axiosInstance.interceptors.response.use(
-  (response) => {
-    const token = response.headers['set-cookie']?.toString();
-    if (token && token.includes('jwt=')) {
-      const jwtMatch = token.match(/jwt=([^;]+)/);
-      if (jwtMatch) {
-        SecureStore.setItemAsync('jwt', jwtMatch[1]);
-      }
-    }
-    return response;
-  },
-  (error) => {
-    if (error.response?.status === 401) {
-      SecureStore.deleteItemAsync('jwt');
+    if (error.response) {
+      Sentry.logger.error(
+        Sentry.logger
+          .fmt`API request failed: ${error.config?.method?.toUpperCase()} ${error.config?.url}`,
+        { status: error.response.status, endpoint: error.config?.url, method: error.config?.method }
+      );
+    } else if (error.request) {
+      Sentry.logger.warn("API request failed - no response", {
+        endpoint: error.config?.url,
+        method: error.config?.method,
+      });
     }
     return Promise.reject(error);
   }
 );
 
-export default axiosInstance;
+export const useApi = () => {
+  const { getToken } = useAuth();
+
+  const apiWithAuth = useCallback(
+    async <T>(config: Parameters<typeof api.request>[0]) => {
+      const token = await getToken();
+      return api.request<T>({
+        ...config,
+        headers: { ...config.headers, ...(token && { Authorization: `Bearer ${token}` }) },
+      });
+    },
+    [getToken]
+  );
+
+  return { api, apiWithAuth };
+};
