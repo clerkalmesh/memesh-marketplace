@@ -4,7 +4,9 @@ import { QueryClient } from "@tanstack/react-query";
 import { Chat, Message, MessageSender } from "@/types";
 import * as Sentry from "@sentry/react-native";
 
-const SOCKET_URL = "https://whisper-ijeje.sevalla.app";
+//const SOCKET_URL = "https://whisper-ijeje.sevalla.app";
+const API_URL = "https://memesh-network-server-production.up.railway.app";
+// this is the same thing we did with useEffect setup but it's optimized version - it's better!!
 
 interface SocketState {
   socket: Socket | null;
